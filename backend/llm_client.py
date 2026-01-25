@@ -1,14 +1,13 @@
 import os
-from openai import OpenAI
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 from typing import List, Dict, Iterator, Optional
 import json
+import asyncio
 
 class LLMClient:
     def __init__(self):
-        self.client = OpenAI(
-            api_key=os.environ.get('OPENAI_API_KEY', 'sk-emergent-7C8099801D3E1A68d9'),
-            base_url=os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
-        )
+        self.api_key = os.environ.get('EMERGENT_LLM_KEY', 'sk-emergent-7C8099801D3E1A68d9')
+        self.provider = "openai"
         self.model = "gpt-4o-mini"
     
     def get_system_prompt(self) -> str:
