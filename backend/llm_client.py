@@ -129,16 +129,37 @@ Be concise, accurate, and helpful. Ask clarifying questions when needed."""
             }
         ]
     
-    def chat_stream(self, messages: List[Dict], tools: Optional[List[Dict]] = None) -> Iterator:
-        if tools is None:
-            tools = self.get_tools_schema()
-        
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools,
-            stream=True,
-            temperature=0.7
-        )
-        
-        return stream
+    async def chat_stream(self, messages: List[Dict], session_id: str = "default") -> str:
+        \"\"\"Send chat message and get response (non-streaming for now)\"\"\"
+        try:
+            # Extract system message
+            system_message = "You are CodeCompanion, an expert AI coding assistant."
+            user_messages = []
+            
+            for msg in messages:
+                if msg['role'] == 'system':
+                    system_message = msg['content']
+                elif msg['role'] == 'user':
+                    user_messages.append(msg['content'])
+            
+            # Use last user message
+            if not user_messages:
+                return \"\"
+            
+            last_message = user_messages[-1]
+            
+            # Create chat instance
+            chat = LlmChat(
+                api_key=self.api_key,
+                session_id=session_id,
+                system_message=system_message
+            ).with_model(self.provider, self.model)
+            
+            # Send message
+            user_msg = UserMessage(text=last_message)
+            response = await chat.send_message(user_msg)
+            
+            return response
+            
+        except Exception as e:
+            raise Exception(f\"LLM error: {str(e)}\")
