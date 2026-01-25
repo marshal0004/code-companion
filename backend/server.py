@@ -1,89 +1,201 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
+from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel
+from typing import List, Dict, Optional
 import os
 import logging
+import json
+import asyncio
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
 
+from database import Database
+from llm_client import LLMClient
+from tools import ToolExecutor
+from config import Config
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+# Initialize config
+Config.init_directories()
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
-
-# Create the main app without a prefix
-app = FastAPI()
-
-# Create a router with the /api prefix
+# Create FastAPI app
+app = FastAPI(title="CodeCompanion API")
 api_router = APIRouter(prefix="/api")
 
+# Initialize components
+db = Database()
+llm_client = LLMClient()
+tool_executor = ToolExecutor()
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Pydantic models
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None
+    project_path: str = "/app"
+
+class ConversationResponse(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    message_count: int
+
+@api_router.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """Streaming chat endpoint with tool execution"""
+    try:
+        # Get or create conversation
+        conversation_id = request.conversation_id
+        if not conversation_id:
+            conversation_id = db.create_conversation(request.project_path)
+        
+        # Add user message
+        db.add_message(conversation_id, "user", request.message)
+        
+        # Get conversation history
+        history = db.get_conversation_messages(conversation_id)
+        
+        # Build messages for LLM
+        messages = [{"role": "system", "content": llm_client.get_system_prompt()}]
+        for msg in history:
+            messages.append({"role": msg['role'], "content": msg['content']})
+        
+        # Stream response
+        async def generate():
+            try:
+                assistant_message = ""
+                tool_calls_buffer = []
+                current_tool_call = None
+                
+                stream = llm_client.chat_stream(messages)
+                
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    
+                    delta = chunk.choices[0].delta
+                    
+                    # Handle content streaming
+                    if delta.content:
+                        assistant_message += delta.content
+                        yield f"data: {json.dumps({'type': 'content', 'content': delta.content})}\n\n"
+                    
+                    # Handle tool calls
+                    if delta.tool_calls:
+                        for tool_call in delta.tool_calls:
+                            if tool_call.function:
+                                # Start of new tool call
+                                if tool_call.function.name:
+                                    current_tool_call = {
+                                        "id": tool_call.id or "",
+                                        "name": tool_call.function.name,
+                                        "arguments": ""
+                                    }
+                                    tool_calls_buffer.append(current_tool_call)
+                                
+                                # Accumulate arguments
+                                if tool_call.function.arguments and current_tool_call:
+                                    current_tool_call["arguments"] += tool_call.function.arguments
+                    
+                    # Check if stream finished
+                    if chunk.choices[0].finish_reason == "tool_calls":
+                        # Execute tools
+                        for tool_call in tool_calls_buffer:
+                            try:
+                                args = json.loads(tool_call["arguments"])
+                                yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_call['name'], 'args': args})}\n\n"
+                                
+                                result = tool_executor.execute_tool(tool_call["name"], args)
+                                
+                                yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_call['name'], 'result': result})}\n\n"
+                                
+                                # Add tool result to messages and continue conversation
+                                messages.append({
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [{
+                                        "id": tool_call["id"],
+                                        "type": "function",
+                                        "function": {
+                                            "name": tool_call["name"],
+                                            "arguments": tool_call["arguments"]
+                                        }
+                                    }]
+                                })
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call["id"],
+                                    "content": json.dumps(result)
+                                })
+                            except Exception as e:
+                                logger.error(f"Tool execution error: {e}")
+                                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                        
+                        # Continue conversation with tool results
+                        stream = llm_client.chat_stream(messages)
+                        tool_calls_buffer = []
+                        current_tool_call = None
+                        assistant_message = ""
+                        continue
+                    
+                    if chunk.choices[0].finish_reason == "stop":
+                        break
+                
+                # Save assistant message
+                if assistant_message:
+                    db.add_message(conversation_id, "assistant", assistant_message)
+                
+                yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id})}\n\n"
+                
+            except Exception as e:
+                logger.error(f"Stream error: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        
+        return StreamingResponse(generate(), media_type="text/event-stream")
     
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    except Exception as e:
+        logger.error(f"Chat error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+@api_router.get("/conversations")
+async def list_conversations():
+    """List all conversations"""
+    try:
+        conversations = db.list_conversations()
+        return {"conversations": conversations}
+    except Exception as e:
+        logger.error(f"List conversations error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
+@api_router.get("/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """Get conversation messages"""
+    try:
+        messages = db.get_conversation_messages(conversation_id)
+        return {"messages": messages}
+    except Exception as e:
+        logger.error(f"Get conversation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
+@api_router.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "service": "codecompanion"}
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-# Include the router in the main app
+# Include router
 app.include_router(api_router)
 
+# Add CORS
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
