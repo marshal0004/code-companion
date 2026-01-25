@@ -130,7 +130,7 @@ Be concise, accurate, and helpful. Ask clarifying questions when needed."""
         ]
     
     async def chat_stream(self, messages: List[Dict], session_id: str = "default") -> str:
-        \"\"\"Send chat message and get response (non-streaming for now)\"\"\"
+        """Send chat message and get response (non-streaming for now)"""
         try:
             # Extract system message
             system_message = "You are CodeCompanion, an expert AI coding assistant."
@@ -144,7 +144,7 @@ Be concise, accurate, and helpful. Ask clarifying questions when needed."""
             
             # Use last user message
             if not user_messages:
-                return \"\"
+                return ""
             
             last_message = user_messages[-1]
             
@@ -162,4 +162,4 @@ Be concise, accurate, and helpful. Ask clarifying questions when needed."""
             return response
             
         except Exception as e:
-            raise Exception(f\"LLM error: {str(e)}\")
+            raise Exception(f"LLM error: {str(e)}")
