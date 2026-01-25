@@ -13,6 +13,8 @@ from database import Database
 from llm_client import LLMClient
 from tools import ToolExecutor
 from config import Config
+from context_manager import ContextManager
+from verification import CodeVerifier
 
 # Initialize config
 Config.init_directories()
@@ -25,6 +27,8 @@ api_router = APIRouter(prefix="/api")
 db = Database()
 llm_client = LLMClient()
 tool_executor = ToolExecutor()
+context_manager = ContextManager()
+code_verifier = CodeVerifier()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -218,6 +222,18 @@ async def index_stats():
         return result
     except Exception as e:
         logger.error(f"Index stats error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/models/pull")
+async def pull_model(model: str):
+    """Pull a model from Ollama registry"""
+    try:
+        if not llm_client.ollama_client:
+            raise HTTPException(status_code=400, detail="Ollama client not available")
+        result = llm_client.ollama_client.pull_model(model)
+        return result
+    except Exception as e:
+        logger.error(f"Pull model error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Include router
