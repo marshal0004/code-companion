@@ -66,82 +66,17 @@ async def chat_stream(request: ChatRequest):
         async def generate():
             try:
                 assistant_message = ""
-                tool_calls_buffer = []
-                current_tool_call = None
                 
-                stream = llm_client.chat_stream(messages)
+                # Get LLM response
+                response = await llm_client.chat_stream(messages, conversation_id)
+                assistant_message = response
                 
-                for chunk in stream:
-                    if not chunk.choices:
-                        continue
-                    
-                    delta = chunk.choices[0].delta
-                    
-                    # Handle content streaming
-                    if delta.content:
-                        assistant_message += delta.content
-                        yield f"data: {json.dumps({'type': 'content', 'content': delta.content})}\n\n"
-                    
-                    # Handle tool calls
-                    if delta.tool_calls:
-                        for tool_call in delta.tool_calls:
-                            if tool_call.function:
-                                # Start of new tool call
-                                if tool_call.function.name:
-                                    current_tool_call = {
-                                        "id": tool_call.id or "",
-                                        "name": tool_call.function.name,
-                                        "arguments": ""
-                                    }
-                                    tool_calls_buffer.append(current_tool_call)
-                                
-                                # Accumulate arguments
-                                if tool_call.function.arguments and current_tool_call:
-                                    current_tool_call["arguments"] += tool_call.function.arguments
-                    
-                    # Check if stream finished
-                    if chunk.choices[0].finish_reason == "tool_calls":
-                        # Execute tools
-                        for tool_call in tool_calls_buffer:
-                            try:
-                                args = json.loads(tool_call["arguments"])
-                                yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_call['name'], 'args': args})}\n\n"
-                                
-                                result = tool_executor.execute_tool(tool_call["name"], args)
-                                
-                                yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_call['name'], 'result': result})}\n\n"
-                                
-                                # Add tool result to messages and continue conversation
-                                messages.append({
-                                    "role": "assistant",
-                                    "content": None,
-                                    "tool_calls": [{
-                                        "id": tool_call["id"],
-                                        "type": "function",
-                                        "function": {
-                                            "name": tool_call["name"],
-                                            "arguments": tool_call["arguments"]
-                                        }
-                                    }]
-                                })
-                                messages.append({
-                                    "role": "tool",
-                                    "tool_call_id": tool_call["id"],
-                                    "content": json.dumps(result)
-                                })
-                            except Exception as e:
-                                logger.error(f"Tool execution error: {e}")
-                                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-                        
-                        # Continue conversation with tool results
-                        stream = llm_client.chat_stream(messages)
-                        tool_calls_buffer = []
-                        current_tool_call = None
-                        assistant_message = ""
-                        continue
-                    
-                    if chunk.choices[0].finish_reason == "stop":
-                        break
+                # Stream the response word by word for better UX
+                words = response.split()
+                for i, word in enumerate(words):
+                    chunk = word + (" " if i < len(words) - 1 else "")
+                    yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+                    await asyncio.sleep(0.01)  # Small delay for streaming effect
                 
                 # Save assistant message
                 if assistant_message:
