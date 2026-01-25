@@ -7,6 +7,12 @@ from datetime import datetime
 import json
 import re
 
+try:
+    from vector_store import VectorStore
+    VECTOR_STORE_AVAILABLE = True
+except ImportError:
+    VECTOR_STORE_AVAILABLE = False
+
 WORKSPACE_ROOT = os.environ.get('WORKSPACE_ROOT', '/app')
 BACKUP_DIR = os.path.expanduser("~/.local/share/codecompanion/backups")
 
@@ -33,6 +39,9 @@ class ToolExecutor:
         self.workspace_root = Path(workspace_root)
         self.backup_dir = Path(BACKUP_DIR)
         self.backup_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize vector store for semantic search
+        self.vector_store = VectorStore(str(self.workspace_root)) if VECTOR_STORE_AVAILABLE else None
     
     def sanitize_path(self, path: str) -> Path:
         """Ensure path is within workspace and resolve it"""
@@ -97,6 +106,10 @@ class ToolExecutor:
                 return self.git_blame(**arguments)
             elif tool_name == "semantic_search":
                 return self.semantic_search(**arguments)
+            elif tool_name == "index_workspace":
+                return self.index_workspace(**arguments)
+            elif tool_name == "index_stats":
+                return self.index_stats(**arguments)
             else:
                 return {"success": False, "error": f"Unknown tool: {tool_name}"}
         except Exception as e:
@@ -453,7 +466,59 @@ class ToolExecutor:
             return {"success": False, "error": str(e)}
     
     def semantic_search(self, query: str, top_k: int = 5, **kwargs) -> Dict:
-        """Semantic search using embeddings (placeholder - requires ChromaDB setup)"""
-        # For now, fall back to text search
-        # TODO: Implement proper semantic search with embeddings
-        return self.search_text(query=query)
+        """Semantic search using embeddings"""
+        if not VECTOR_STORE_AVAILABLE or not self.vector_store or not self.vector_store.is_available():
+            # Fall back to text search
+            return self.search_text(query=query)
+        
+        try:
+            # Try semantic search first
+            result = self.vector_store.search(query, top_k)
+            
+            if result.get('success'):
+                # Format results for display
+                formatted_results = []
+                for item in result.get('results', []):
+                    formatted_results.append(
+                        f"File: {item['file']} (Score: {item['score']:.2f})\n{item['chunk'][:200]}..."
+                    )
+                
+                return {
+                    "success": True,
+                    "matches": formatted_results,
+                    "count": result.get('count', 0),
+                    "search_type": "semantic"
+                }
+            else:
+                # Fall back to text search
+                return self.search_text(query=query)
+        except Exception as e:
+            # Fall back to text search on error
+            return self.search_text(query=query)
+    
+    def index_workspace(self, **kwargs) -> Dict:
+        """Index workspace for semantic search"""
+        if not VECTOR_STORE_AVAILABLE or not self.vector_store:
+            return {"success": False, "error": "Vector store not available"}
+        
+        if not self.vector_store.is_available():
+            return {"success": False, "error": "Vector store not initialized"}
+        
+        try:
+            result = self.vector_store.index_workspace()
+            return result
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def index_stats(self, **kwargs) -> Dict:
+        """Get index statistics"""
+        if not VECTOR_STORE_AVAILABLE or not self.vector_store:
+            return {"success": False, "error": "Vector store not available"}
+        
+        if not self.vector_store.is_available():
+            return {"success": False, "error": "Vector store not initialized"}
+        
+        try:
+            return self.vector_store.get_stats()
+        except Exception as e:
+            return {"success": False, "error": str(e)}

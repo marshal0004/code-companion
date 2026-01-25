@@ -122,3 +122,6 @@ watchfiles==1.1.1
 websockets==15.0.1
 yarl==1.22.0
 zipp==3.23.0
+ollama>=0.1.0
+chromadb>=0.4.0
+sentence-transformers>=2.2.0

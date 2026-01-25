@@ -159,6 +159,67 @@ async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "codecompanion"}
 
+@api_router.get("/models/list")
+async def list_models():
+    """List available models from all providers"""
+    try:
+        models = llm_client.list_available_models()
+        status = llm_client.get_status()
+        return {
+            "models": models,
+            "current_provider": status["active_provider"],
+            "current_model": status["active_model"],
+            "status": status
+        }
+    except Exception as e:
+        logger.error(f"List models error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/models/switch")
+async def switch_model(provider: str, model: Optional[str] = None):
+    """Switch to a different provider/model"""
+    try:
+        llm_client.switch_provider(provider, model)
+        status = llm_client.get_status()
+        return {
+            "success": True,
+            "active_provider": status["active_provider"],
+            "active_model": status["active_model"]
+        }
+    except Exception as e:
+        logger.error(f"Switch model error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@api_router.get("/models/status")
+async def model_status():
+    """Get current model status"""
+    try:
+        status = llm_client.get_status()
+        return status
+    except Exception as e:
+        logger.error(f"Model status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/index/workspace")
+async def index_workspace():
+    """Index workspace for semantic search"""
+    try:
+        result = tool_executor.index_workspace()
+        return result
+    except Exception as e:
+        logger.error(f"Index workspace error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/index/stats")
+async def index_stats():
+    """Get indexing statistics"""
+    try:
+        result = tool_executor.index_stats()
+        return result
+    except Exception as e:
+        logger.error(f"Index stats error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Include router
 app.include_router(api_router)
 
