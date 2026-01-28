@@ -4,6 +4,10 @@ import re
 import asyncio
 from typing import List, Dict, Optional, AsyncGenerator
 from enum import Enum
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Check available LLM providers
 try:
@@ -11,6 +15,12 @@ try:
     OLLAMA_AVAILABLE = True
 except ImportError:
     OLLAMA_AVAILABLE = False
+
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
 
 try:
     from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -21,8 +31,8 @@ except ImportError:
 
 class LLMProvider(Enum):
     OLLAMA = "ollama"
+    GEMINI = "gemini"
     EMERGENT = "emergent"
-    OPENAI = "openai"
 
 
 # Recommended models for coding
@@ -38,6 +48,12 @@ RECOMMENDED_MODELS = {
         "codellama:7b",
         "llama3.1:8b",
         "mistral:latest",
+    ],
+    "gemini": [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-1.0-pro",
     ],
     "emergent": [
         "gpt-5.1",
@@ -292,11 +308,133 @@ class OllamaClient:
             raise Exception(f"Ollama streaming error: {str(e)}")
 
 
+class GeminiClient:
+    """Google Gemini LLM client - FREE TIER FRIENDLY"""
+    
+    def __init__(self, model: str = "gemini-2.0-flash"):
+        self.api_key = os.environ.get('GEMINI_API_KEY', '')
+        self.model = model
+        self._initialized = False
+        self._model_instance = None
+        
+        if self.api_key and GEMINI_AVAILABLE:
+            try:
+                genai.configure(api_key=self.api_key)
+                self._initialized = True
+            except Exception as e:
+                print(f"Gemini initialization error: {e}")
+    
+    def is_available(self) -> bool:
+        """Check if Gemini API is available"""
+        return GEMINI_AVAILABLE and bool(self.api_key) and self._initialized
+    
+    def _get_model(self):
+        """Get or create model instance"""
+        if self._model_instance is None or self._model_instance.model_name != f"models/{self.model}":
+            self._model_instance = genai.GenerativeModel(
+                model_name=self.model,
+                generation_config={
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "max_output_tokens": 8192,
+                }
+            )
+        return self._model_instance
+    
+    async def chat(self, messages: List[Dict], system_prompt: str = None) -> Dict:
+        """Send chat message to Gemini"""
+        if not self.is_available():
+            raise Exception("Gemini API is not available")
+        
+        try:
+            model = self._get_model()
+            
+            # Build conversation history
+            history = []
+            for msg in messages[:-1]:  # All except last message
+                role = msg.get('role', 'user')
+                content = msg.get('content', '')
+                
+                if role == 'user':
+                    history.append({"role": "user", "parts": [content]})
+                elif role == 'assistant':
+                    history.append({"role": "model", "parts": [content]})
+                elif role == 'tool':
+                    history.append({"role": "user", "parts": [f"Tool Result: {content}"]})
+            
+            # Get last message
+            last_msg = messages[-1] if messages else {"content": ""}
+            last_content = last_msg.get('content', '')
+            
+            # Start chat with system prompt
+            full_prompt = ""
+            if system_prompt:
+                full_prompt = f"System Instructions: {system_prompt}\n\n"
+            full_prompt += last_content
+            
+            # Create chat session
+            chat = model.start_chat(history=history)
+            
+            # Send message
+            response = await asyncio.to_thread(chat.send_message, full_prompt)
+            
+            return {
+                "content": response.text,
+                "model": self.model,
+                "provider": "gemini"
+            }
+        except Exception as e:
+            raise Exception(f"Gemini API error: {str(e)}")
+    
+    async def chat_stream(self, messages: List[Dict], system_prompt: str = None) -> AsyncGenerator[str, None]:
+        """Stream chat response from Gemini"""
+        if not self.is_available():
+            raise Exception("Gemini API is not available")
+        
+        try:
+            model = self._get_model()
+            
+            # Build conversation history
+            history = []
+            for msg in messages[:-1]:
+                role = msg.get('role', 'user')
+                content = msg.get('content', '')
+                
+                if role == 'user':
+                    history.append({"role": "user", "parts": [content]})
+                elif role == 'assistant':
+                    history.append({"role": "model", "parts": [content]})
+                elif role == 'tool':
+                    history.append({"role": "user", "parts": [f"Tool Result: {content}"]})
+            
+            # Get last message
+            last_msg = messages[-1] if messages else {"content": ""}
+            last_content = last_msg.get('content', '')
+            
+            # Build full prompt
+            full_prompt = ""
+            if system_prompt:
+                full_prompt = f"System Instructions: {system_prompt}\n\n"
+            full_prompt += last_content
+            
+            # Create chat and stream response
+            chat = model.start_chat(history=history)
+            response = chat.send_message(full_prompt, stream=True)
+            
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+                    
+        except Exception as e:
+            raise Exception(f"Gemini streaming error: {str(e)}")
+
+
 class EmergentClient:
     """Emergent/OpenAI cloud LLM client"""
     
     def __init__(self, model: str = "gpt-5.1"):
-        self.api_key = os.environ.get('EMERGENT_LLM_KEY', 'sk-emergent-7C8099801D3E1A68d9')
+        self.api_key = os.environ.get('EMERGENT_LLM_KEY', '')
         self.model = model
         self.provider = "openai"
     
@@ -340,7 +478,13 @@ class EmergentClient:
 
 
 class LLMClient:
-    """Multi-provider LLM client with automatic fallback"""
+    """Multi-provider LLM client with automatic fallback
+    
+    Priority order:
+    1. Gemini (FREE cloud, user's API key)
+    2. Ollama (FREE local)
+    3. Emergent (cloud, budget limited)
+    """
     
     def __init__(self, 
                  provider: str = "auto",
@@ -350,7 +494,7 @@ class LLMClient:
         Initialize LLM client.
         
         Args:
-            provider: "ollama", "emergent", or "auto" (tries ollama first, falls back to emergent)
+            provider: "ollama", "gemini", "emergent", or "auto" (tries best available)
             model: Model name (provider-specific)
             ollama_url: Ollama server URL for local mode
         """
@@ -362,6 +506,10 @@ class LLMClient:
             model=model or "deepseek-coder:6.7b",
             base_url=ollama_url
         ) if OLLAMA_AVAILABLE else None
+        
+        self.gemini_client = GeminiClient(
+            model=model or "gemini-2.0-flash"
+        ) if GEMINI_AVAILABLE else None
         
         self.emergent_client = EmergentClient(
             model=model or "gpt-5.1"
@@ -379,19 +527,28 @@ class LLMClient:
                 self._active_provider = "ollama"
             else:
                 raise Exception("Ollama requested but not available")
+        elif self.preferred_provider == "gemini":
+            if self.gemini_client and self.gemini_client.is_available():
+                self._active_provider = "gemini"
+            else:
+                raise Exception("Gemini API requested but not available")
         elif self.preferred_provider == "emergent":
             if self.emergent_client and self.emergent_client.is_available():
                 self._active_provider = "emergent"
             else:
                 raise Exception("Emergent API requested but not available")
-        else:  # auto
-            # Try Ollama first (free), fall back to Emergent
-            if self.ollama_client and self.ollama_client.is_available():
+        else:  # auto - prioritize FREE options
+            # 1. Try Gemini first (FREE cloud API with user's key)
+            if self.gemini_client and self.gemini_client.is_available():
+                self._active_provider = "gemini"
+            # 2. Try Ollama (FREE local)
+            elif self.ollama_client and self.ollama_client.is_available():
                 self._active_provider = "ollama"
+            # 3. Fall back to Emergent (has budget limits)
             elif self.emergent_client and self.emergent_client.is_available():
                 self._active_provider = "emergent"
             else:
-                raise Exception("No LLM provider available")
+                raise Exception("No LLM provider available. Please set GEMINI_API_KEY or install Ollama.")
     
     @property
     def active_provider(self) -> str:
@@ -401,6 +558,8 @@ class LLMClient:
     def active_model(self) -> str:
         if self._active_provider == "ollama" and self.ollama_client:
             return self.ollama_client.model
+        elif self._active_provider == "gemini" and self.gemini_client:
+            return self.gemini_client.model
         elif self._active_provider == "emergent" and self.emergent_client:
             return self.emergent_client.model
         return "unknown"
@@ -413,6 +572,12 @@ class LLMClient:
             self._active_provider = "ollama"
             if model:
                 self.ollama_client.model = model
+        elif provider == "gemini":
+            if not self.gemini_client or not self.gemini_client.is_available():
+                raise Exception("Gemini API is not available")
+            self._active_provider = "gemini"
+            if model:
+                self.gemini_client.model = model
         elif provider == "emergent":
             if not self.emergent_client or not self.emergent_client.is_available():
                 raise Exception("Emergent API is not available")
@@ -425,6 +590,9 @@ class LLMClient:
     def list_available_models(self) -> Dict[str, List[str]]:
         """List all available models by provider"""
         models = {}
+        
+        if self.gemini_client and self.gemini_client.is_available():
+            models["gemini"] = RECOMMENDED_MODELS["gemini"]
         
         if self.ollama_client and self.ollama_client.is_available():
             local_models = self.ollama_client.list_models()
@@ -440,6 +608,7 @@ class LLMClient:
         return {
             "active_provider": self._active_provider,
             "active_model": self.active_model,
+            "gemini_available": self.gemini_client.is_available() if self.gemini_client else False,
             "ollama_available": self.ollama_client.is_available() if self.ollama_client else False,
             "emergent_available": self.emergent_client.is_available() if self.emergent_client else False,
             "available_models": self.list_available_models()
@@ -450,13 +619,20 @@ class LLMClient:
         system_prompt = get_system_prompt_with_tools()
         
         try:
-            if self._active_provider == "ollama":
-                # Collect full response from stream
+            if self._active_provider == "gemini":
+                # Use Gemini (FREE)
+                full_response = ""
+                async for chunk in self.gemini_client.chat_stream(messages, system_prompt):
+                    full_response += chunk
+                response_text = full_response
+                
+            elif self._active_provider == "ollama":
+                # Collect full response from Ollama stream
                 full_response = ""
                 async for chunk in self.ollama_client.chat_stream(messages, system_prompt):
                     full_response += chunk
-                
                 response_text = full_response
+                
             else:
                 # Use Emergent
                 result = await self.emergent_client.chat(messages, system_prompt)
@@ -476,8 +652,24 @@ class LLMClient:
             
         except Exception as e:
             # Try fallback if available
-            if self._active_provider == "ollama" and self.emergent_client and self.emergent_client.is_available():
-                print(f"Ollama failed, falling back to Emergent: {e}")
+            error_msg = str(e)
+            
+            # If Gemini fails, try Ollama
+            if self._active_provider == "gemini" and self.ollama_client and self.ollama_client.is_available():
+                print(f"Gemini failed, falling back to Ollama: {e}")
+                self._active_provider = "ollama"
+                return await self.chat_stream(messages, session_id)
+            
+            # If Ollama fails, try Gemini
+            elif self._active_provider == "ollama" and self.gemini_client and self.gemini_client.is_available():
+                print(f"Ollama failed, falling back to Gemini: {e}")
+                self._active_provider = "gemini"
+                return await self.chat_stream(messages, session_id)
+            
+            # Last resort: try Emergent
+            elif self.emergent_client and self.emergent_client.is_available() and self._active_provider != "emergent":
+                print(f"Falling back to Emergent: {e}")
                 self._active_provider = "emergent"
                 return await self.chat_stream(messages, session_id)
-            raise Exception(f"LLM error: {str(e)}")
+            
+            raise Exception(f"LLM error: {error_msg}")

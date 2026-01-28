@@ -42,6 +42,11 @@ RECOMMENDED_MODELS = {
         ("codellama:7b", "Lightweight option"),
         ("llama3.1:8b", "General purpose"),
     ],
+    "gemini": [
+        ("gemini-2.0-flash", "Google's fastest model (FREE)"),
+        ("gemini-1.5-flash", "Fast and efficient (FREE)"),
+        ("gemini-1.5-pro", "Most capable (FREE tier)"),
+    ],
     "emergent": [
         ("gpt-5.1", "OpenAI's latest"),
         ("gpt-4o", "Fast and capable"),
@@ -77,13 +82,22 @@ class CodeCompanionCLI:
                 self.current_model = status.get('active_model', 'unknown')
                 
                 ollama_status = "✓" if status.get('ollama_available') else "✗"
+                gemini_status = "✓" if status.get('gemini_available') else "✗"
                 cloud_status = "✓" if status.get('emergent_available') else "✗"
                 
-                provider_color = "green" if self.current_provider == "ollama" else "cyan"
-                cost_info = "FREE (Local)" if self.current_provider == "ollama" else "Cloud API"
+                # Color based on provider
+                if self.current_provider == "ollama":
+                    provider_color = "green"
+                    cost_info = "FREE (Local)"
+                elif self.current_provider == "gemini":
+                    provider_color = "magenta"
+                    cost_info = "FREE (Gemini API)"
+                else:
+                    provider_color = "cyan"
+                    cost_info = "Cloud API"
                 
                 self.console.print(f"[{provider_color}]🔹 Provider: {self.current_provider} | Model: {self.current_model} | {cost_info}[/{provider_color}]")
-                self.console.print(f"[dim]   Ollama: {ollama_status} | Cloud: {cloud_status}[/dim]\n")
+                self.console.print(f"[dim]   Ollama: {ollama_status} | Gemini: {gemini_status} | Cloud: {cloud_status}[/dim]\n")
         except:
             self.console.print("[yellow]⚠ Could not connect to backend. Is it running?[/yellow]\n")
     
@@ -214,6 +228,12 @@ class CodeCompanionCLI:
                 current_provider = data.get('current_provider', '')
                 current_model = data.get('current_model', '')
                 
+                if 'gemini' in models:
+                    for model in models['gemini']:
+                        is_current = current_provider == 'gemini' and model == current_model
+                        status = "◉ Active" if is_current else "○"
+                        table.add_row("Gemini", model, status, "FREE")
+                
                 if 'ollama' in models:
                     for model in models['ollama'][:8]:
                         is_current = current_provider == 'ollama' and model == current_model
@@ -229,10 +249,10 @@ class CodeCompanionCLI:
                 self.console.print(table)
                 
                 # Show recommendations
-                self.console.print("\n[bold]💡 Recommended for Coding:[/bold]")
-                self.console.print("  • [green]deepseek-coder:6.7b[/green] - Best balance (FREE)")
-                self.console.print("  • [green]qwen2.5-coder:7b[/green] - Fast & capable (FREE)")
-                self.console.print("  • [cyan]gpt-5.1[/cyan] - Most capable (Cloud)")
+                self.console.print("\n[bold]💡 Recommended for Coding (FREE):[/bold]")
+                self.console.print("  • [magenta]gemini-2.0-flash[/magenta] - Google's fast model (FREE)")
+                self.console.print("  • [green]deepseek-coder:6.7b[/green] - Best balance (FREE local)")
+                self.console.print("  • [green]qwen2.5-coder:7b[/green] - Fast & capable (FREE local)")
                 
             else:
                 self.console.print(f"[red]Failed to fetch models: {response.status_code}[/red]")
@@ -261,8 +281,17 @@ class CodeCompanionCLI:
                 self.current_provider = data.get('active_provider')
                 self.current_model = data.get('active_model')
                 
-                provider_color = "green" if self.current_provider == "ollama" else "cyan"
-                cost_info = "FREE (Local)" if self.current_provider == "ollama" else "Cloud API"
+                # Color based on provider
+                if self.current_provider == "ollama":
+                    provider_color = "green"
+                    cost_info = "FREE (Local)"
+                elif self.current_provider == "gemini":
+                    provider_color = "magenta"
+                    cost_info = "FREE (Gemini API)"
+                else:
+                    provider_color = "cyan"
+                    cost_info = "Cloud API"
+                
                 self.console.print(f"[{provider_color}]✓ Switched to {self.current_provider} ({self.current_model}) - {cost_info}[/{provider_color}]")
             else:
                 error_msg = response.json().get('detail', 'Unknown error')
@@ -311,9 +340,18 @@ class CodeCompanionCLI:
                 
                 table.add_row("Provider", status.get('active_provider', 'unknown'))
                 table.add_row("Model", status.get('active_model', 'unknown'))
+                table.add_row("Gemini", "✓ Available" if status.get('gemini_available') else "✗ Not available")
                 table.add_row("Ollama", "✓ Available" if status.get('ollama_available') else "✗ Not available")
                 table.add_row("Cloud", "✓ Available" if status.get('emergent_available') else "✗ Not available")
-                table.add_row("Cost", "FREE" if status.get('active_provider') == 'ollama' else "Cloud API")
+                
+                provider = status.get('active_provider')
+                if provider == 'ollama':
+                    cost = "FREE (Local)"
+                elif provider == 'gemini':
+                    cost = "FREE (Gemini API)"
+                else:
+                    cost = "Cloud API"
+                table.add_row("Cost", cost)
                 
                 self.console.print(Panel(table, title="[bold]Current Status[/bold]", border_style="cyan"))
                 
@@ -376,8 +414,9 @@ class CodeCompanionCLI:
 ### Model Management
 - `/models` - List available AI models
 - `/switch <provider> [model]` - Switch AI provider/model
-  - Example: `/switch ollama deepseek-coder:6.7b`
-  - Example: `/switch emergent gpt-5.1`
+  - Example: `/switch gemini` (FREE cloud)
+  - Example: `/switch ollama deepseek-coder:6.7b` (FREE local)
+  - Example: `/switch emergent gpt-5.1` (cloud)
 - `/pull <model>` - Pull model from Ollama registry
   - Example: `/pull deepseek-coder:6.7b`
 - `/status` - Show current model status
@@ -417,14 +456,15 @@ class CodeCompanionCLI:
 "Explain how the database connection works"
 ```
 
-## 💰 Cost
+## 💰 Cost (All FREE Options!)
 
-| Provider | Cost |
-|----------|------|
-| Ollama (Local) | **FREE** |
-| Emergent (Cloud) | API credits |
+| Provider | Cost | Status |
+|----------|------|--------|
+| **Gemini** (Cloud) | **FREE** | Recommended |
+| **Ollama** (Local) | **FREE** | Recommended |
+| Emergent (Cloud) | API credits | Budget limited |
 
-Use `/switch ollama` for FREE local inference!
+Use `/switch gemini` or `/switch ollama` for FREE inference!
 """
         self.console.print(Markdown(help_text))
     
@@ -435,7 +475,12 @@ Use `/switch ollama` for FREE local inference!
         while True:
             try:
                 # Get user input with prompt
-                provider_indicator = "🟢" if self.current_provider == "ollama" else "🔵"
+                if self.current_provider == "ollama":
+                    provider_indicator = "🟢"  # Green for local
+                elif self.current_provider == "gemini":
+                    provider_indicator = "🟣"  # Purple for Gemini
+                else:
+                    provider_indicator = "🔵"  # Blue for cloud
                 self.console.print(f"\n{provider_indicator} [bold cyan]You:[/bold cyan] ", end="")
                 user_input = input().strip()
                 
