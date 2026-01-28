@@ -651,25 +651,22 @@ class LLMClient:
             }
             
         except Exception as e:
-            # Try fallback if available
+            # Try fallback ONLY between FREE providers (Gemini <-> Ollama)
+            # NEVER automatically fall back to Emergent (has budget limits)
             error_msg = str(e)
             
-            # If Gemini fails, try Ollama
+            # If Gemini fails, try Ollama (both are FREE)
             if self._active_provider == "gemini" and self.ollama_client and self.ollama_client.is_available():
-                print(f"Gemini failed, falling back to Ollama: {e}")
+                print(f"⚠️ Gemini failed, falling back to Ollama (FREE): {e}")
                 self._active_provider = "ollama"
                 return await self.chat_stream(messages, session_id)
             
-            # If Ollama fails, try Gemini
+            # If Ollama fails, try Gemini (both are FREE)
             elif self._active_provider == "ollama" and self.gemini_client and self.gemini_client.is_available():
-                print(f"Ollama failed, falling back to Gemini: {e}")
+                print(f"⚠️ Ollama failed, falling back to Gemini (FREE): {e}")
                 self._active_provider = "gemini"
                 return await self.chat_stream(messages, session_id)
             
-            # Last resort: try Emergent
-            elif self.emergent_client and self.emergent_client.is_available() and self._active_provider != "emergent":
-                print(f"Falling back to Emergent: {e}")
-                self._active_provider = "emergent"
-                return await self.chat_stream(messages, session_id)
-            
-            raise Exception(f"LLM error: {error_msg}")
+            # DO NOT fall back to Emergent automatically - user must explicitly choose it
+            # This prevents wasting budget on API calls
+            raise Exception(f"LLM error (NO AUTO-FALLBACK TO EMERGENT): {error_msg}. Use '/switch emergent' to explicitly use paid API.")

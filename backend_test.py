@@ -12,7 +12,7 @@ from typing import Dict, Any
 import os
 
 # Get backend URL from frontend env
-BACKEND_URL = "https://agentic-coder-4.preview.emergentagent.com/api"
+BACKEND_URL = "https://devcompanion-5.preview.emergentagent.com/api"
 
 class CodeCompanionTester:
     def __init__(self):
