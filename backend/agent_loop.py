@@ -19,6 +19,13 @@ from datetime import datetime
 from tools import ToolExecutor
 from context_manager import ContextManager, PlanningContext
 
+# Try to import orchestrator if available
+try:
+    from agents.orchestrator import AgentOrchestrator
+    ORCHESTRATOR_AVAILABLE = True
+except ImportError:
+    ORCHESTRATOR_AVAILABLE = False
+
 
 class LoopState(Enum):
     PLANNING = "planning"
@@ -305,6 +312,166 @@ class AgenticLoop:
             'errors': self.metrics.errors[:5],
             'state': self.state.value
         }
+
+
+class EnhancedAgenticLoop(AgenticLoop):
+    """Enhanced agentic loop with multi-agent orchestration support"""
+    
+    def __init__(self, 
+                 llm_client,
+                 tool_executor: ToolExecutor,
+                 context_manager: ContextManager,
+                 vector_store=None,
+                 verifier=None,
+                 use_orchestrator: bool = True,
+                 max_iterations: int = 15,
+                 max_retries: int = 3):
+        super().__init__(llm_client, tool_executor, context_manager, max_iterations, max_retries)
+        self.use_orchestrator = use_orchestrator and ORCHESTRATOR_AVAILABLE
+        self.vector_store = vector_store
+        self.verifier = verifier
+        self.orchestrator = None
+        
+        if self.use_orchestrator:
+            try:
+                # Initialize orchestrator with sub-agents
+                tools_dict = {
+                    'read_file': tool_executor,
+                    'write_file': tool_executor,
+                    'edit_file': tool_executor,
+                    'list_directory': tool_executor,
+                    'run_command': tool_executor,
+                    'search_text': tool_executor,
+                    'git_status': tool_executor,
+                    'git_diff': tool_executor,
+                    'git_log': tool_executor,
+                    'git_blame': tool_executor,
+                    'semantic_search': tool_executor,
+                    'index_workspace': tool_executor,
+                    'index_stats': tool_executor,
+                }
+                self.orchestrator = AgentOrchestrator(
+                    llm_client,
+                    tools_dict,
+                    vector_store=vector_store,
+                    verifier=verifier
+                )
+            except Exception as e:
+                print(f"Failed to initialize orchestrator: {e}")
+                self.use_orchestrator = False
+    
+    async def run(self, 
+                  messages: List[Dict],
+                  session_id: str = "default",
+                  use_agents: bool = None) -> AsyncGenerator[Dict, None]:
+        """
+        Run the agentic loop, optionally using multi-agent orchestration.
+        
+        Args:
+            messages: Conversation messages
+            session_id: Session identifier
+            use_agents: Override to force agent/no-agent mode
+        
+        Yields: Events from execution
+        """
+        # Determine if we should use orchestrator
+        should_use_agents = use_agents if use_agents is not None else self.use_orchestrator
+        
+        if should_use_agents and self.orchestrator:
+            # Use multi-agent orchestration for complex tasks
+            yield {'type': 'mode', 'mode': 'multi_agent'}
+            
+            # Extract user task from messages
+            user_messages = [m for m in messages if m.get('role') == 'user']
+            if not user_messages:
+                yield {'type': 'error', 'message': 'No user message found'}
+                return
+            
+            task = user_messages[-1].get('content', '')
+            
+            # Build context
+            context = {
+                'messages': messages,
+                'session_id': session_id,
+                'workspace_root': self.tool_executor.workspace_root,
+                'history': messages[:-1] if len(messages) > 1 else []
+            }
+            
+            # Run orchestrator
+            async for event in self.orchestrator.execute(task, context, session_id):
+                # Transform orchestrator events to loop events
+                event_type = event.get('type')
+                
+                if event_type == 'phase':
+                    yield {'type': 'thinking', 'content': f"[{event.get('phase', '')} phase]"}
+                elif event_type == 'plan':
+                    plan = event.get('plan', {})
+                    # Format plan for display
+                    plan_text = self._format_plan(plan)
+                    yield {'type': 'planning', 'content': plan_text}
+                elif event_type == 'step':
+                    if event.get('status') == 'started':
+                        step = event.get('step', {})
+                        yield {'type': 'thinking', 'content': f"Executing: {step.get('action', 'unknown')}"}
+                elif event_type == 'tool_call':
+                    yield event  # Pass through
+                elif event_type == 'tool_result':
+                    yield event  # Pass through
+                elif event_type == 'verification':
+                    result = event.get('result', {})
+                    yield {'type': 'content', 'content': f"[Verification: {result.get('overall', 'unknown')}]"}
+                elif event_type == 'debug_analysis':
+                    analysis = event.get('analysis', {})
+                    yield {'type': 'content', 'content': f"[Debug: {analysis.get('error_type', 'analyzing')}]"}
+                elif event_type == 'replan':
+                    yield {'type': 'thinking', 'content': '[Replanning with alternative approach]'}
+                elif event_type == 'done':
+                    result = event.get('result', {})
+                    summary = f"Task completed: {result.get('completed_steps', 0)} steps completed"
+                    if result.get('failed_steps', 0) > 0:
+                        summary += f", {result['failed_steps']} failed"
+                    yield {'type': 'content', 'content': summary}
+                    yield event
+                elif event_type == 'error':
+                    yield event
+                else:
+                    yield event
+        else:
+            # Use basic loop (existing implementation)
+            yield {'type': 'mode', 'mode': 'basic'}
+            async for event in super().run(messages, session_id):
+                yield event
+    
+    def _format_plan(self, plan: Dict) -> str:
+        """Format plan for display"""
+        parts = []
+        
+        # Strategic level
+        strategic = plan.get('strategic', [])
+        if strategic:
+            parts.append("## Strategic Goals:")
+            for i, goal in enumerate(strategic, 1):
+                if isinstance(goal, dict):
+                    parts.append(f"{i}. {goal.get('goal', 'Unknown goal')}")
+                else:
+                    parts.append(f"{i}. {goal}")
+        
+        # Tactical level
+        tactical = plan.get('tactical', [])
+        if tactical:
+            parts.append("\n## Tactical Phases:")
+            for i, phase in enumerate(tactical, 1):
+                if isinstance(phase, dict):
+                    parts.append(f"{i}. {phase.get('phase', 'Unknown phase')}")
+                else:
+                    parts.append(f"{i}. {phase}")
+        
+        # Operational level (just count)
+        operational = plan.get('operational', [])
+        if operational:
+            parts.append(f"\n## Operational Steps: {len(operational)} actions planned")
+        
+        return "\n".join(parts) if parts else "Plan created"
 
 
 def get_enhanced_system_prompt() -> str:

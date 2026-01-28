@@ -15,6 +15,15 @@ from tools import ToolExecutor
 from config import Config
 from context_manager import ContextManager
 from verification import CodeVerifier
+from agent_loop import EnhancedAgenticLoop
+
+# Try to import vector_store
+try:
+    from vector_store import VectorStore
+    vector_store = VectorStore()
+except Exception as e:
+    logger.warning(f"Vector store not available: {e}")
+    vector_store = None
 
 # Initialize config
 Config.init_directories()
@@ -29,6 +38,22 @@ llm_client = LLMClient()
 tool_executor = ToolExecutor()
 context_manager = ContextManager()
 code_verifier = CodeVerifier()
+
+# Initialize enhanced agentic loop with multi-agent orchestration
+try:
+    enhanced_loop = EnhancedAgenticLoop(
+        llm_client=llm_client,
+        tool_executor=tool_executor,
+        context_manager=context_manager,
+        vector_store=vector_store,
+        verifier=code_verifier,
+        use_orchestrator=True,  # Enable multi-agent mode
+        max_iterations=15
+    )
+    logger.info("Enhanced agentic loop with multi-agent orchestration initialized")
+except Exception as e:
+    logger.warning(f"Failed to initialize enhanced loop: {e}. Using basic mode.")
+    enhanced_loop = None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -69,64 +94,87 @@ async def chat_stream(request: ChatRequest):
         # Stream response with agentic loop
         async def generate():
             try:
-                max_iterations = 10  # Prevent infinite loops
-                iteration = 0
-                
-                while iteration < max_iterations:
-                    iteration += 1
+                # Use enhanced agentic loop if available
+                if enhanced_loop:
+                    # Use multi-agent orchestration
+                    full_response = ""
+                    async for event in enhanced_loop.run(messages, conversation_id):
+                        event_type = event.get('type')
+                        
+                        # Stream event to client
+                        yield f"data: {json.dumps(event)}\n\n"
+                        
+                        # Collect response text
+                        if event_type == 'content':
+                            full_response += event.get('content', '')
+                        elif event_type == 'done':
+                            # Save conversation
+                            if full_response:
+                                db.add_message(conversation_id, "assistant", full_response)
+                            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id})}\n\n"
+                            return
+                        
+                        await asyncio.sleep(0.01)
+                else:
+                    # Fallback to basic loop (existing implementation)
+                    max_iterations = 10
+                    iteration = 0
                     
-                    # Get LLM response
-                    result = await llm_client.chat_stream(messages, conversation_id)
-                    response_text = result['response']
-                    tool_calls = result['tool_calls']
+                    while iteration < max_iterations:
+                        iteration += 1
+                        
+                        # Get LLM response
+                        result = await llm_client.chat_stream(messages, conversation_id)
+                        response_text = result['response']
+                        tool_calls = result['tool_calls']
+                        
+                        # Stream response text
+                        if response_text:
+                            words = response_text.split()
+                            for i, word in enumerate(words):
+                                chunk = word + (" " if i < len(words) - 1 else "")
+                                yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+                                await asyncio.sleep(0.02)
+                        
+                        # If no tool calls, we're done
+                        if not tool_calls:
+                            # Save assistant message
+                            db.add_message(conversation_id, "assistant", response_text)
+                            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id})}\n\n"
+                            break
+                        
+                        # Execute tool calls (agentic behavior)
+                        tool_results = []
+                        for tool_call in tool_calls:
+                            tool_name = tool_call['tool']
+                            tool_args = tool_call['args']
+                            
+                            # Notify about tool execution
+                            yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'args': tool_args})}\n\n"
+                            
+                            # Execute tool
+                            result = tool_executor.execute_tool(tool_name, tool_args)
+                            tool_results.append(result)
+                            
+                            # Stream tool result
+                            yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_name, 'result': result})}\n\n"
+                            
+                            # Log tool execution
+                            db.add_tool_call(user_msg_id, tool_name, tool_args, json.dumps(result), "completed")
+                        
+                        # Add tool results to conversation
+                        messages.append({"role": "assistant", "content": result['raw_response']})
+                        for tool_result in tool_results:
+                            messages.append({"role": "tool", "content": json.dumps(tool_result)})
+                        
+                        # Continue the agentic loop (LLM will see tool results and decide next action)
+                        await asyncio.sleep(0.1)
                     
-                    # Stream response text
+                    # Save final assistant message if any
                     if response_text:
-                        words = response_text.split()
-                        for i, word in enumerate(words):
-                            chunk = word + (" " if i < len(words) - 1 else "")
-                            yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
-                            await asyncio.sleep(0.02)
-                    
-                    # If no tool calls, we're done
-                    if not tool_calls:
-                        # Save assistant message
                         db.add_message(conversation_id, "assistant", response_text)
-                        yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id})}\n\n"
-                        break
                     
-                    # Execute tool calls (agentic behavior)
-                    tool_results = []
-                    for tool_call in tool_calls:
-                        tool_name = tool_call['tool']
-                        tool_args = tool_call['args']
-                        
-                        # Notify about tool execution
-                        yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'args': tool_args})}\n\n"
-                        
-                        # Execute tool
-                        result = tool_executor.execute_tool(tool_name, tool_args)
-                        tool_results.append(result)
-                        
-                        # Stream tool result
-                        yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_name, 'result': result})}\n\n"
-                        
-                        # Log tool execution
-                        db.add_tool_call(user_msg_id, tool_name, tool_args, json.dumps(result), "completed")
-                    
-                    # Add tool results to conversation
-                    messages.append({"role": "assistant", "content": result['raw_response']})
-                    for tool_result in tool_results:
-                        messages.append({"role": "tool", "content": json.dumps(tool_result)})
-                    
-                    # Continue the agentic loop (LLM will see tool results and decide next action)
-                    await asyncio.sleep(0.1)
-                
-                # Save final assistant message if any
-                if response_text:
-                    db.add_message(conversation_id, "assistant", response_text)
-                
-                yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id})}\n\n"
                 
             except Exception as e:
                 logger.error(f"Stream error: {e}")
