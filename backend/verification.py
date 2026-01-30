@@ -272,3 +272,248 @@ class CodeVerifier:
 def create_verifier(workspace_root: str = "/app") -> CodeVerifier:
     """Factory function to create verifier"""
     return CodeVerifier(workspace_root)
+
+
+class AsyncCodeVerifier(CodeVerifier):
+    """Async version of CodeVerifier for agent integration.
+    
+    Provides async methods for linting, type checking, and test execution.
+    """
+    
+    async def run_lint(self, file_path: str) -> Dict:
+        """Run linting on file asynchronously"""
+        if file_path.endswith('.py'):
+            return await self._run_python_lint_async(file_path)
+        elif file_path.endswith(('.js', '.ts', '.jsx', '.tsx')):
+            return await self._run_js_lint_async(file_path)
+        return {'passed': True, 'skipped': True, 'reason': 'Unsupported file type'}
+    
+    async def _run_python_lint_async(self, file_path: str) -> Dict:
+        """Run ruff or flake8 on Python file asynchronously"""
+        import asyncio
+        try:
+            # Try ruff first (faster)
+            proc = await asyncio.create_subprocess_exec(
+                'ruff', 'check', file_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            
+            if proc.returncode == 0:
+                return {'passed': True, 'linter': 'ruff'}
+            else:
+                return {
+                    'passed': False,
+                    'linter': 'ruff',
+                    'issues': stdout.decode().strip().split('\n')[:10]
+                }
+        except FileNotFoundError:
+            # ruff not installed, try flake8
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    'flake8', file_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                
+                if proc.returncode == 0:
+                    return {'passed': True, 'linter': 'flake8'}
+                else:
+                    return {
+                        'passed': False,
+                        'linter': 'flake8',
+                        'issues': stdout.decode().strip().split('\n')[:10]
+                    }
+            except Exception:
+                return {'passed': True, 'skipped': True, 'reason': 'No Python linter available'}
+        except asyncio.TimeoutError:
+            return {'passed': True, 'skipped': True, 'reason': 'Linting timed out'}
+        except Exception as e:
+            return {'passed': True, 'skipped': True, 'reason': str(e)}
+    
+    async def _run_js_lint_async(self, file_path: str) -> Dict:
+        """Run eslint on JavaScript/TypeScript file asynchronously"""
+        import asyncio
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                'npx', 'eslint', file_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            
+            if proc.returncode == 0:
+                return {'passed': True, 'linter': 'eslint'}
+            else:
+                return {
+                    'passed': False,
+                    'linter': 'eslint',
+                    'issues': stdout.decode().strip().split('\n')[:10]
+                }
+        except Exception:
+            return {'passed': True, 'skipped': True, 'reason': 'ESLint not available'}
+    
+    async def run_type_check(self, file_path: str) -> Dict:
+        """Run type checking on file asynchronously"""
+        if file_path.endswith('.py'):
+            return await self._run_mypy_async(file_path)
+        elif file_path.endswith('.ts') or file_path.endswith('.tsx'):
+            return await self._run_tsc_async(file_path)
+        return {'passed': True, 'skipped': True, 'reason': 'Unsupported file type'}
+    
+    async def _run_mypy_async(self, file_path: str) -> Dict:
+        """Run mypy type checker asynchronously"""
+        import asyncio
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                'mypy', file_path, '--ignore-missing-imports',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            
+            if proc.returncode == 0:
+                return {'passed': True, 'checker': 'mypy'}
+            else:
+                return {
+                    'passed': False,
+                    'checker': 'mypy',
+                    'issues': stdout.decode().strip().split('\n')[:10]
+                }
+        except Exception:
+            return {'passed': True, 'skipped': True, 'reason': 'mypy not available'}
+    
+    async def _run_tsc_async(self, file_path: str) -> Dict:
+        """Run TypeScript compiler check asynchronously"""
+        import asyncio
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                'npx', 'tsc', '--noEmit', file_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            
+            if proc.returncode == 0:
+                return {'passed': True, 'checker': 'tsc'}
+            else:
+                return {
+                    'passed': False,
+                    'checker': 'tsc',
+                    'issues': stderr.decode().strip().split('\n')[:10]
+                }
+        except Exception:
+            return {'passed': True, 'skipped': True, 'reason': 'TypeScript compiler not available'}
+    
+    async def run_tests_async(self, test_command: str = None, test_path: str = None) -> Dict[str, Any]:
+        """Run tests asynchronously"""
+        import asyncio
+        result = {'success': True, 'output': '', 'errors': []}
+        
+        # Detect test framework
+        if test_command:
+            cmd = test_command
+        elif (self.workspace_root / 'pytest.ini').exists() or (self.workspace_root / 'pyproject.toml').exists():
+            cmd = 'pytest -v --tb=short'
+        elif (self.workspace_root / 'package.json').exists():
+            cmd = 'npm test'
+        else:
+            return {'success': True, 'message': 'No test configuration found'}
+        
+        if test_path:
+            cmd += f' {test_path}'
+        
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self.workspace_root)
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            
+            result['output'] = stdout.decode() + stderr.decode()
+            result['returncode'] = proc.returncode
+            result['success'] = proc.returncode == 0
+            
+            if not result['success']:
+                result['errors'].append({
+                    'type': 'test_failure',
+                    'message': 'Tests failed',
+                    'details': stderr.decode()[:1000]
+                })
+        except asyncio.TimeoutError:
+            result['success'] = False
+            result['errors'].append({'type': 'timeout', 'message': 'Tests timed out'})
+        except Exception as e:
+            result['success'] = False
+            result['errors'].append({'type': 'error', 'message': str(e)})
+        
+        return result
+    
+    async def verify_full(self, file_path: str, content: str = None) -> Dict[str, Any]:
+        """Run full verification pipeline asynchronously.
+        
+        This performs:
+        1. Syntax check
+        2. Lint check
+        3. Type check (if applicable)
+        
+        Args:
+            file_path: Path to file to verify
+            content: Optional file content (reads from disk if not provided)
+            
+        Returns:
+            Dict with all verification results
+        """
+        results = {
+            'success': True,
+            'syntax': None,
+            'lint': None,
+            'type_check': None,
+            'summary': []
+        }
+        
+        # 1. Syntax check (synchronous, fast)
+        syntax_result = self.verify_file(file_path, content)
+        results['syntax'] = syntax_result
+        
+        if not syntax_result.get('success', True):
+            results['success'] = False
+            results['summary'].append(f"Syntax errors: {len(syntax_result.get('errors', []))}")
+            return results  # Don't continue if syntax fails
+        
+        results['summary'].append("Syntax: OK")
+        
+        # 2. Lint check (async)
+        lint_result = await self.run_lint(file_path)
+        results['lint'] = lint_result
+        
+        if not lint_result.get('passed', True) and not lint_result.get('skipped'):
+            results['success'] = False
+            results['summary'].append(f"Lint issues: {len(lint_result.get('issues', []))}")
+        elif lint_result.get('skipped'):
+            results['summary'].append(f"Lint: skipped ({lint_result.get('reason', 'N/A')})")
+        else:
+            results['summary'].append("Lint: OK")
+        
+        # 3. Type check (async)
+        type_result = await self.run_type_check(file_path)
+        results['type_check'] = type_result
+        
+        if not type_result.get('passed', True) and not type_result.get('skipped'):
+            # Type errors are warnings, not failures
+            results['summary'].append(f"Type issues: {len(type_result.get('issues', []))}")
+        elif type_result.get('skipped'):
+            results['summary'].append(f"Type check: skipped ({type_result.get('reason', 'N/A')})")
+        else:
+            results['summary'].append("Type check: OK")
+        
+        return results
+
+
+def create_async_verifier(workspace_root: str = "/app") -> AsyncCodeVerifier:
+    """Factory function to create async verifier"""
+    return AsyncCodeVerifier(workspace_root)

@@ -203,6 +203,128 @@ class ContextManager:
             summary_parts.append("Directories: " + ", ".join(dirs[:10]))
         
         return "\n".join(summary_parts)
+    
+    def apply_sliding_window(self, messages: List[Dict], max_messages: int = 20) -> List[Dict]:
+        """Apply sliding window to conversation history.
+        
+        Keeps the most recent messages while preserving system messages.
+        This prevents context overflow for long conversations.
+        
+        Args:
+            messages: Full conversation history
+            max_messages: Maximum number of messages to keep
+            
+        Returns:
+            Truncated message list with sliding window applied
+        """
+        if len(messages) <= max_messages:
+            return messages
+        
+        # Separate system messages and conversation
+        system_msgs = [m for m in messages if m.get('role') == 'system']
+        other_msgs = [m for m in messages if m.get('role') != 'system']
+        
+        # Calculate how many non-system messages we can keep
+        remaining_slots = max_messages - len(system_msgs)
+        
+        if remaining_slots <= 0:
+            # Too many system messages, keep only the most important
+            return system_msgs[:max_messages]
+        
+        # Keep most recent messages
+        recent_msgs = other_msgs[-remaining_slots:] if remaining_slots > 0 else []
+        
+        return system_msgs + recent_msgs
+    
+    def compress_old_messages(self, messages: List[Dict], threshold: int = 15) -> List[Dict]:
+        """Compress old messages to save tokens.
+        
+        Summarizes old conversation turns while keeping recent context intact.
+        
+        Args:
+            messages: Full conversation history
+            threshold: Number of recent messages to keep uncompressed
+            
+        Returns:
+            Messages with old ones compressed into summary
+        """
+        if len(messages) <= threshold:
+            return messages
+        
+        # Separate messages
+        system_msgs = [m for m in messages if m.get('role') == 'system']
+        other_msgs = [m for m in messages if m.get('role') != 'system']
+        
+        if len(other_msgs) <= threshold:
+            return messages
+        
+        # Split into old and recent
+        recent = other_msgs[-threshold:]
+        old = other_msgs[:-threshold]
+        
+        # Create summary of old messages
+        tool_calls = sum(1 for m in old if m.get('role') == 'tool')
+        user_msgs = sum(1 for m in old if m.get('role') == 'user')
+        assistant_msgs = sum(1 for m in old if m.get('role') == 'assistant')
+        
+        summary_content = (
+            f"[COMPRESSED HISTORY]\n"
+            f"Previous conversation: {user_msgs} user requests, {assistant_msgs} responses, {tool_calls} tool executions.\n"
+            f"Topics covered: {self._extract_topics(old)}"
+        )
+        
+        compressed = [{'role': 'system', 'content': summary_content}]
+        return system_msgs + compressed + recent
+    
+    def _extract_topics(self, messages: List[Dict], max_topics: int = 5) -> str:
+        """Extract main topics from messages for summarization"""
+        # Simple topic extraction - look for key words in user messages
+        topics = []
+        keywords = ['create', 'fix', 'add', 'implement', 'debug', 'test', 'build', 'update', 'modify']
+        
+        for msg in messages:
+            if msg.get('role') == 'user':
+                content = msg.get('content', '').lower()
+                for kw in keywords:
+                    if kw in content:
+                        # Extract context around keyword
+                        idx = content.find(kw)
+                        snippet = content[idx:idx+50].split('.')[0]
+                        if snippet and snippet not in topics:
+                            topics.append(snippet)
+                            if len(topics) >= max_topics:
+                                break
+                if len(topics) >= max_topics:
+                    break
+        
+        return "; ".join(topics) if topics else "general coding tasks"
+    
+    def get_token_budget_status(self, messages: List[Dict], system_prompt: str = "") -> Dict:
+        """Get current token budget utilization status.
+        
+        Returns:
+            Dict with token counts and budget status
+        """
+        system_tokens = self.count_tokens(system_prompt)
+        history_tokens = sum(self.count_tokens(m.get('content', '')) for m in messages)
+        project_tokens = self.count_tokens(self.project_context)
+        
+        total_used = system_tokens + history_tokens + project_tokens
+        remaining = self.max_tokens - total_used
+        
+        return {
+            'total_budget': self.max_tokens,
+            'used': total_used,
+            'remaining': remaining,
+            'usage_percent': round((total_used / self.max_tokens) * 100, 1),
+            'breakdown': {
+                'system_prompt': system_tokens,
+                'history': history_tokens,
+                'project_context': project_tokens
+            },
+            'needs_compression': remaining < 1000,
+            'warning': remaining < 500
+        }
 
 
 class PlanningContext:

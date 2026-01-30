@@ -375,4 +375,71 @@ class AgentOrchestrator:
             return 'planning'
         else:
             return 'coding'
-            return 'coding'
+    
+    async def execute_specialized(self, task: str, context: Dict, session_id: str = "orchestrator") -> AsyncGenerator[Dict, None]:
+        """Execute task using specialized agents based on task type.
+        
+        This provides direct agent routing for specialized tasks without
+        going through the full planning cycle.
+        """
+        task_type = self.analyze_task_type(task)
+        
+        yield {'type': 'task_analysis', 'task_type': task_type, 'agent': task_type}
+        
+        try:
+            if task_type == 'debugging':
+                yield {'type': 'phase', 'phase': 'debugging', 'agent': 'debugger'}
+                result = await self.debugger.analyze_error(task, context)
+                yield {'type': 'result', 'agent': 'debugger', 'data': result.data}
+                
+            elif task_type == 'testing':
+                yield {'type': 'phase', 'phase': 'testing', 'agent': 'tester'}
+                result = await self.tester.execute(task, context)
+                yield {'type': 'result', 'agent': 'tester', 'data': result.data}
+                
+            elif task_type == 'architecture':
+                yield {'type': 'phase', 'phase': 'architecture', 'agent': 'architect'}
+                result = await self.architect.execute(task, context)
+                yield {'type': 'result', 'agent': 'architect', 'data': result.data}
+                
+            elif task_type == 'review':
+                yield {'type': 'phase', 'phase': 'review', 'agent': 'reviewer'}
+                result = await self.reviewer.execute(task, context)
+                yield {'type': 'result', 'agent': 'reviewer', 'data': result.data}
+                
+            elif task_type == 'research':
+                yield {'type': 'phase', 'phase': 'research', 'agent': 'researcher'}
+                result = await self.researcher.execute(task, context)
+                yield {'type': 'result', 'agent': 'researcher', 'data': result.data}
+                
+            elif task_type == 'planning':
+                yield {'type': 'phase', 'phase': 'planning', 'agent': 'planner'}
+                result = await self.planner.execute(task, context)
+                yield {'type': 'result', 'agent': 'planner', 'data': result.data}
+                
+            else:  # coding
+                # For coding tasks, use full orchestration
+                async for event in self.execute(task, context, session_id):
+                    yield event
+                return
+            
+            yield {'type': 'done', 'success': result.success if result else False}
+            
+        except Exception as e:
+            yield {'type': 'error', 'error': str(e)}
+    
+    def get_agent_status(self) -> Dict:
+        """Get status of all agents"""
+        return {
+            'agents': {
+                'planner': {'name': 'PlannerAgent', 'status': 'ready', 'capability': 'Task decomposition and hierarchical planning'},
+                'coder': {'name': 'CoderAgent', 'status': 'ready', 'capability': 'Code generation and editing'},
+                'debugger': {'name': 'DebuggerAgent', 'status': 'ready', 'capability': 'Error analysis and fixing'},
+                'tester': {'name': 'TesterAgent', 'status': 'ready', 'capability': 'Test generation and verification'},
+                'researcher': {'name': 'ResearcherAgent', 'status': 'ready', 'capability': 'Context gathering and pattern search'},
+                'architect': {'name': 'ArchitectAgent', 'status': 'ready', 'capability': 'System design and structure'},
+                'reviewer': {'name': 'ReviewerAgent', 'status': 'ready', 'capability': 'Code review and quality assurance'}
+            },
+            'total_agents': 7,
+            'orchestrator': 'ready'
+        }
