@@ -108,9 +108,6 @@ Your responsibilities:
 - Verify fix after applying
 '''
     
-    def __init__(self, llm_client, tools: Dict):
-        super().__init__(llm_client, tools, name="debugger")
-    
     async def execute(self, task: str, context: Dict) -> AgentResult:
         """Analyze error and generate fix"""
         error = context.get('error', task)

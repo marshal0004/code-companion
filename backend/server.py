@@ -17,6 +17,10 @@ from context_manager import ContextManager
 from verification import CodeVerifier
 from agent_loop import EnhancedAgenticLoop
 
+# Configure logging first (before any logger usage)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Try to import vector_store
 try:
     from vector_store import VectorStore
@@ -54,10 +58,6 @@ try:
 except Exception as e:
     logger.warning(f"Failed to initialize enhanced loop: {e}. Using basic mode.")
     enhanced_loop = None
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Pydantic models
 class ChatRequest(BaseModel):
