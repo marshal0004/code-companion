@@ -15,6 +15,9 @@ from .planner_agent import PlannerAgent
 from .coder_agent import CoderAgent
 from .debugger_agent import DebuggerAgent
 from .tester_agent import TesterAgent
+from .researcher_agent import ResearcherAgent
+from .architect_agent import ArchitectAgent
+from .reviewer_agent import ReviewerAgent
 
 
 @dataclass
@@ -33,11 +36,14 @@ class AgentOrchestrator:
     """
     Main orchestrator that delegates tasks to specialized sub-agents.
     
-    Architecture:
+    Architecture (8 agents - matching Claude Code):
     - PlannerAgent: Task decomposition and planning
     - CoderAgent: Code generation and editing
     - DebuggerAgent: Error analysis and fixing
     - TesterAgent: Verification and testing
+    - ResearcherAgent: Context gathering and pattern search
+    - ArchitectAgent: System design and structure
+    - ReviewerAgent: Code review and quality assurance
     """
     
     def __init__(self, llm_client, tools: Dict, vector_store=None, verifier=None):
@@ -45,11 +51,16 @@ class AgentOrchestrator:
         self.llm = llm_client
         self.tools = tools
         
-        # Initialize sub-agents
+        # Core agents
         self.planner = PlannerAgent(llm_client, tools, vector_store)
         self.coder = CoderAgent(llm_client, tools)
         self.debugger = DebuggerAgent(llm_client, tools)
         self.tester = TesterAgent(llm_client, tools, verifier)
+        
+        # Additional agents (matching Claude Code)
+        self.researcher = ResearcherAgent(llm_client, tools, vector_store)
+        self.architect = ArchitectAgent(llm_client, tools)
+        self.reviewer = ReviewerAgent(llm_client, tools)
         
         self.state = ExecutionState()
         self.max_iterations = 15
@@ -354,7 +365,14 @@ class AgentOrchestrator:
             return 'debugging'
         elif any(keyword in task_lower for keyword in ['test', 'verify', 'check']):
             return 'testing'
-        elif any(keyword in task_lower for keyword in ['plan', 'design', 'architect']):
+        elif any(keyword in task_lower for keyword in ['architect', 'structure', 'design system']):
+            return 'architecture'
+        elif any(keyword in task_lower for keyword in ['review', 'check code', 'code review', 'quality']):
+            return 'review'
+        elif any(keyword in task_lower for keyword in ['search', 'find', 'look for', 'research', 'pattern']):
+            return 'research'
+        elif any(keyword in task_lower for keyword in ['plan', 'design']):
             return 'planning'
         else:
+            return 'coding'
             return 'coding'
