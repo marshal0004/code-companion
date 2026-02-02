@@ -11,12 +11,64 @@ import json
 from typing import Dict, List, Any
 from .base_agent import BaseAgent, AgentResult
 
+# PHASE 3: Import Surgical Edit System for accuracy
+try:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from surgical_edit import SurgicalEditSystem, EditRecommendation
+    SURGICAL_EDIT_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Surgical edit system not available: {e}")
+    SURGICAL_EDIT_AVAILABLE = False
+
 
 class CoderAgent(BaseAgent):
     """Specialized agent for code generation and editing"""
     
     def __init__(self, llm_client, tools: Dict):
         super().__init__(llm_client, tools, name="coder")
+        
+        # PHASE 3: Initialize surgical edit system
+        self.surgical_edit = SurgicalEditSystem() if SURGICAL_EDIT_AVAILABLE else None
+    
+    def _enhance_prompt_with_surgical_guidance(self, base_prompt: str) -> str:
+        """Add surgical edit guidance to prompt (PHASE 3)"""
+        if not self.surgical_edit:
+            return base_prompt
+        
+        guidance = '''
+
+🎯 SURGICAL PRECISION REQUIRED (Critical for Accuracy)
+
+When modifying existing files, follow these rules:
+
+1. **ALWAYS use edit_file for small changes** (< 50 lines modified)
+   - Identify EXACT text to replace
+   - Make minimal, targeted changes
+   - Preserve surrounding code
+
+2. **ONLY use write_file for:**
+   - Brand new files that don't exist
+   - Complete rewrites when > 70% of file changes
+   - Files under 50 lines total
+
+3. **Search-and-Replace Approach:**
+   - Find exact text block to modify
+   - Copy it precisely
+   - Make minimal changes
+   - Replace with new version
+
+✅ GOOD Example (Surgical Edit):
+<TOOL_CALL>{"tool": "edit_file", "args": {"path": "app.py", "old_text": "def process():\\n    return 1", "new_text": "def process():\\n    return 2"}}</TOOL_CALL>
+
+❌ BAD Example (Avoid Rewrites):
+<TOOL_CALL>{"tool": "write_file", "args": {"path": "app.py", "content": "...entire file rewritten..."}}</TOOL_CALL>
+
+Remember: Edit, don't rewrite! This reduces errors by 50%.
+
+'''
+        return guidance + "\n" + base_prompt
     
     def _get_system_prompt(self) -> str:
         return '''You are a Coding Agent specialized in generating and editing code.
@@ -79,11 +131,14 @@ Provide tool calls in JSON:
             )
     
     async def _plan_code_actions(self, task: str, context: Dict) -> List[Dict]:
-        """Plan what coding actions to take"""
+        """Plan what coding actions to take (PHASE 3: with surgical guidance)"""
+        # PHASE 3: Enhance task with surgical edit guidance
+        enhanced_task = self._enhance_prompt_with_surgical_guidance(task) if self.surgical_edit else task
+        
         prompt = f'''{self.system_prompt}
 
 ## Task:
-{task}
+{enhanced_task}
 
 ## Context:
 {json.dumps(context, indent=2)}
@@ -91,6 +146,8 @@ Provide tool calls in JSON:
 ## Instructions:
 Analyze the task and determine what coding actions are needed.
 Output a list of actions (tool calls) to accomplish this task.
+
+REMEMBER: Use edit_file for modifications, write_file only for new files!
 
 Format:
 ```json

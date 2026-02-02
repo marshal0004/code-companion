@@ -13,6 +13,14 @@ try:
 except ImportError:
     VECTOR_STORE_AVAILABLE = False
 
+# PHASE 2: Import Read-First Protocol for accuracy
+try:
+    from read_first_protocol import ReadFirstProtocol
+    READ_FIRST_AVAILABLE = True
+except ImportError:
+    READ_FIRST_AVAILABLE = False
+    ReadFirstProtocol = None
+
 WORKSPACE_ROOT = os.environ.get('WORKSPACE_ROOT', '/app')
 BACKUP_DIR = os.path.expanduser("~/.local/share/codecompanion/backups")
 
@@ -42,6 +50,14 @@ class ToolExecutor:
         
         # Initialize vector store for semantic search
         self.vector_store = VectorStore(str(self.workspace_root)) if VECTOR_STORE_AVAILABLE else None
+        
+        # PHASE 2: Initialize read-first protocol
+        self.read_first = ReadFirstProtocol() if READ_FIRST_AVAILABLE else None
+        self.current_session = "default"
+    
+    def set_session(self, session_id: str):
+        """Set current session for read-first tracking"""
+        self.current_session = session_id
     
     def sanitize_path(self, path: str) -> Path:
         """Ensure path is within workspace and resolve it"""
@@ -82,38 +98,100 @@ class ToolExecutor:
         return str(backup_path)
     
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a tool and return result"""
+        """Execute a tool with read-first enforcement and immediate feedback"""
         try:
-            if tool_name == "read_file":
-                return self.read_file(**arguments)
-            elif tool_name == "write_file":
-                return self.write_file(**arguments)
-            elif tool_name == "edit_file":
-                return self.edit_file(**arguments)
-            elif tool_name == "list_directory":
-                return self.list_directory(**arguments)
-            elif tool_name == "run_command":
-                return self.run_command(**arguments)
-            elif tool_name == "search_text":
-                return self.search_text(**arguments)
-            elif tool_name == "git_status":
-                return self.git_status(**arguments)
-            elif tool_name == "git_diff":
-                return self.git_diff(**arguments)
-            elif tool_name == "git_log":
-                return self.git_log(**arguments)
-            elif tool_name == "git_blame":
-                return self.git_blame(**arguments)
-            elif tool_name == "semantic_search":
-                return self.semantic_search(**arguments)
-            elif tool_name == "index_workspace":
-                return self.index_workspace(**arguments)
-            elif tool_name == "index_stats":
-                return self.index_stats(**arguments)
-            else:
-                return {"success": False, "error": f"Unknown tool: {tool_name}"}
+            # PHASE 2: Read-First Protocol Enforcement
+            if READ_FIRST_AVAILABLE and self.read_first:
+                # Record reads
+                if tool_name == "read_file":
+                    result = self._execute_tool_internal(tool_name, arguments)
+                    if result.get('success'):
+                        path = arguments.get('path', '')
+                        if path:
+                            self.read_first.record_read(path, self.current_session)
+                    return result
+                
+                # Enforce read-first for writes/edits on existing files
+                elif tool_name in ['write_file', 'edit_file']:
+                    path = arguments.get('path', '')
+                    
+                    if path:
+                        try:
+                            file_path = self.sanitize_path(path)
+                            # Only enforce for existing files
+                            if file_path.exists():
+                                allowed, msg = self.read_first.can_write(path, self.current_session)
+                                
+                                if not allowed:
+                                    return {
+                                        'success': False,
+                                        'error': f'READ-FIRST VIOLATION: {msg}',
+                                        'blocked': True,
+                                        'suggestion': f'Use read_file on {path} before modifying it'
+                                    }
+                        except Exception:
+                            pass  # If path check fails, allow operation
+            
+            # Execute the tool normally
+            result = self._execute_tool_internal(tool_name, arguments)
+            
+            # PHASE 4: Immediate Feedback - Quick syntax check after writes
+            if result.get('success') and tool_name in ['write_file', 'edit_file']:
+                path = arguments.get('path', '')
+                if path and path.endswith('.py'):
+                    syntax_check = self._quick_syntax_check(path)
+                    if not syntax_check['success']:
+                        result['warning'] = f"⚠️ Syntax error: {syntax_check['error']}"
+                        result['needs_fix'] = True
+            
+            return result
         except Exception as e:
             return {"success": False, "error": str(e)}
+    
+    def _execute_tool_internal(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Internal tool execution (original logic)"""
+        if tool_name == "read_file":
+            return self.read_file(**arguments)
+        elif tool_name == "write_file":
+            return self.write_file(**arguments)
+        elif tool_name == "edit_file":
+            return self.edit_file(**arguments)
+        elif tool_name == "list_directory":
+            return self.list_directory(**arguments)
+        elif tool_name == "run_command":
+            return self.run_command(**arguments)
+        elif tool_name == "search_text":
+            return self.search_text(**arguments)
+        elif tool_name == "git_status":
+            return self.git_status(**arguments)
+        elif tool_name == "git_diff":
+            return self.git_diff(**arguments)
+        elif tool_name == "git_log":
+            return self.git_log(**arguments)
+        elif tool_name == "git_blame":
+            return self.git_blame(**arguments)
+        elif tool_name == "semantic_search":
+            return self.semantic_search(**arguments)
+        elif tool_name == "index_workspace":
+            return self.index_workspace(**arguments)
+        elif tool_name == "index_stats":
+            return self.index_stats(**arguments)
+        else:
+            return {"success": False, "error": f"Unknown tool: {tool_name}"}
+    
+    def _quick_syntax_check(self, path: str) -> Dict:
+        """Quick Python syntax check (PHASE 4: Immediate Feedback)"""
+        try:
+            import ast
+            file_path = self.sanitize_path(path)
+            with open(file_path, 'r') as f:
+                code = f.read()
+            ast.parse(code)
+            return {'success': True}
+        except SyntaxError as e:
+            return {'success': False, 'error': f"Line {e.lineno}: {e.msg}"}
+        except Exception:
+            return {'success': True}  # Don't fail on other errors
     
     def read_file(self, path: str, start_line: int = None, end_line: int = None) -> Dict:
         """Read file contents"""

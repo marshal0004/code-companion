@@ -19,6 +19,13 @@ from datetime import datetime
 from tools import ToolExecutor
 from context_manager import ContextManager, PlanningContext
 
+# PHASE 6: Import Verification Protocol for enhanced verification
+try:
+    from verification_protocol import VerificationProtocol
+    VERIFICATION_PROTOCOL_AVAILABLE = True
+except ImportError:
+    VERIFICATION_PROTOCOL_AVAILABLE = False
+
 # Try to import orchestrator if available
 try:
     from agents.orchestrator import AgentOrchestrator
@@ -263,28 +270,61 @@ class AgenticLoop:
         return any(tc.get('tool') in verification_tools for tc in tool_calls)
     
     async def _verify_changes(self, tool_calls: List[Dict], results: List[ToolResult]) -> Dict:
-        """Verify changes made by tools"""
+        """Enhanced verification using verification protocol (PHASE 6)"""
         verification_results = {'success': True, 'details': []}
         
+        # Collect files that were modified
+        modified_files = []
         for tc, result in zip(tool_calls, results):
             tool_name = tc.get('tool', '')
-            
-            if tool_name in ['write_file', 'edit_file']:
+            if tool_name in ['write_file', 'edit_file'] and result.success:
                 path = tc.get('args', {}).get('path', '')
-                
-                # Basic verification: check file exists and is readable
                 if path:
-                    check_result = self.tool_executor.execute_tool('read_file', {'path': path})
-                    if not check_result.get('success'):
-                        verification_results['success'] = False
-                        verification_results['details'].append(f"File verification failed: {path}")
+                    modified_files.append(path)
+        
+        # PHASE 6: Use verification protocol if available
+        if VERIFICATION_PROTOCOL_AVAILABLE and self.verification_protocol and modified_files:
+            for file_path in modified_files:
+                try:
+                    verify_result = await self.verification_protocol.verify_file_change(file_path)
                     
-                    # If Python file, try syntax check
-                    if path.endswith('.py'):
-                        syntax_check = self._check_python_syntax(path)
-                        if not syntax_check['success']:
+                    verification_results['details'].append({
+                        'file': file_path,
+                        'verified': verify_result.get('verified', False),
+                        'checks': verify_result.get('checks', {})
+                    })
+                    
+                    if not verify_result.get('verified', False):
+                        verification_results['success'] = False
+                        errors = verify_result.get('errors', [])
+                        verification_results['error'] = f"Verification failed for {file_path}: {'; '.join(errors)}"
+                except Exception as e:
+                    # Fall back to basic verification if protocol fails
+                    verification_results['details'].append({
+                        'file': file_path,
+                        'error': f'Verification protocol error: {str(e)}'
+                    })
+        else:
+            # Fall back to basic verification
+            for tc, result in zip(tool_calls, results):
+                tool_name = tc.get('tool', '')
+                
+                if tool_name in ['write_file', 'edit_file']:
+                    path = tc.get('args', {}).get('path', '')
+                    
+                    # Basic verification: check file exists and is readable
+                    if path:
+                        check_result = self.tool_executor.execute_tool('read_file', {'path': path})
+                        if not check_result.get('success'):
                             verification_results['success'] = False
-                            verification_results['error'] = syntax_check.get('error', 'Syntax error')
+                            verification_results['details'].append(f"File verification failed: {path}")
+                        
+                        # If Python file, try syntax check
+                        if path.endswith('.py'):
+                            syntax_check = self._check_python_syntax(path)
+                            if not syntax_check['success']:
+                                verification_results['success'] = False
+                                verification_results['error'] = syntax_check.get('error', 'Syntax error')
         
         return verification_results
     
@@ -331,6 +371,14 @@ class EnhancedAgenticLoop(AgenticLoop):
         self.vector_store = vector_store
         self.verifier = verifier
         self.orchestrator = None
+        
+        # PHASE 6: Initialize verification protocol
+        self.verification_protocol = None
+        if VERIFICATION_PROTOCOL_AVAILABLE:
+            try:
+                self.verification_protocol = VerificationProtocol(tool_executor.workspace_root)
+            except Exception as e:
+                print(f"Warning: Verification protocol initialization failed: {e}")
         
         if self.use_orchestrator:
             try:

@@ -19,6 +19,18 @@ from .researcher_agent import ResearcherAgent
 from .architect_agent import ArchitectAgent
 from .reviewer_agent import ReviewerAgent
 
+# PHASE 1: Import Thinking Engine for accuracy
+try:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from thinking_engine import ThinkingEngine
+    from meta_cognition import MetaCognitionLayer
+    THINKING_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Thinking engine not available: {e}")
+    THINKING_AVAILABLE = False
+
 
 @dataclass
 class ExecutionState:
@@ -62,6 +74,10 @@ class AgentOrchestrator:
         self.architect = ArchitectAgent(llm_client, tools)
         self.reviewer = ReviewerAgent(llm_client, tools)
         
+        # PHASE 1 & 7: Initialize accuracy mechanisms
+        self.thinking_engine = ThinkingEngine() if THINKING_AVAILABLE else None
+        self.meta_cognition = MetaCognitionLayer() if THINKING_AVAILABLE else None
+        
         self.state = ExecutionState()
         self.max_iterations = 15
         self.max_replans = 3
@@ -95,6 +111,46 @@ class AgentOrchestrator:
         self.state = ExecutionState()
         
         try:
+            # PHASE 1: Extended Thinking Phase (before planning)
+            if self.thinking_engine:
+                yield {'type': 'phase', 'phase': 'thinking', 'agent': 'thinking_engine'}
+                
+                thinking_prompt = self.thinking_engine.get_thinking_prompt(task, context)
+                thinking_messages = [{"role": "user", "content": thinking_prompt}]
+                
+                # Get deep thinking response
+                thinking_result = await self.llm.chat_stream(thinking_messages, session_id + "_thinking")
+                thinking_response = thinking_result.get('response', '')
+                
+                yield {
+                    'type': 'thinking',
+                    'content': thinking_response[:1000]  # Limit output
+                }
+                
+                # Parse thinking result
+                thinking_parsed = self.thinking_engine.parse_thinking_response(thinking_response)
+                
+                # Check confidence
+                if thinking_parsed.confidence < 0.7:
+                    yield {
+                        'type': 'warning',
+                        'message': f'Low confidence ({thinking_parsed.confidence:.2f}) - may need clarification'
+                    }
+                
+                # PHASE 7: Meta-cognition check
+                if self.meta_cognition:
+                    meta_check = self.meta_cognition.check_assumptions({
+                        'task': task,
+                        'thinking': thinking_parsed.__dict__,
+                        'context': context
+                    })
+                    
+                    if meta_check.get('has_concerns'):
+                        yield {
+                            'type': 'meta_reflection',
+                            'concerns': meta_check.get('concerns', [])[:3]  # Top 3 concerns
+                        }
+            
             # Phase 1: Planning
             yield {'type': 'phase', 'phase': 'planning', 'agent': 'planner'}
             

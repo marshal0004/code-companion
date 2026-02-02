@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import json
 
+# PHASE 5: Import Project Memory for persistent context
+try:
+    from project_memory import ProjectMemory
+    PROJECT_MEMORY_AVAILABLE = True
+except ImportError:
+    PROJECT_MEMORY_AVAILABLE = False
+
 
 class ContextManager:
     """Manages context for LLM interactions"""
@@ -33,6 +40,24 @@ class ContextManager:
         # Project context from CLAUDE.md files
         self.project_context = ""
         self._load_project_context()
+        
+        # PHASE 5: Initialize project memory
+        self.project_memory = None
+        if PROJECT_MEMORY_AVAILABLE:
+            try:
+                self.project_memory = ProjectMemory(str(self.workspace_root))
+                self.project_memory.initialize_from_project()
+            except Exception as e:
+                print(f"Warning: Project memory initialization failed: {e}")
+    
+    def get_project_memory_context(self) -> str:
+        """Get project memory context for LLM (PHASE 5)"""
+        if self.project_memory:
+            try:
+                return self.project_memory.get_context_for_llm()
+            except Exception:
+                return ""
+        return ""
     
     def _load_project_context(self):
         """Load context from CLAUDE.md files (hierarchical)"""
