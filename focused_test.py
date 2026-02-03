@@ -8,7 +8,7 @@ import json
 import sys
 
 # Get backend URL from frontend env
-BACKEND_URL = "https://code-clone-33.preview.emergentagent.com/api"
+BACKEND_URL = "https://github-guardian.preview.emergentagent.com/api"
 
 def test_endpoint(name, url, method="GET", data=None):
     """Test a single endpoint"""
