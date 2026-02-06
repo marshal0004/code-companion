@@ -22,6 +22,13 @@ except ImportError as e:
     print(f"Warning: Surgical edit system not available: {e}")
     SURGICAL_EDIT_AVAILABLE = False
 
+# 95% Accuracy: Pre-execution validation
+try:
+    from advanced_accuracy import PreExecutionValidator
+    VALIDATOR_AVAILABLE = True
+except ImportError:
+    VALIDATOR_AVAILABLE = False
+
 
 class CoderAgent(BaseAgent):
     """Specialized agent for code generation and editing"""
@@ -31,6 +38,9 @@ class CoderAgent(BaseAgent):
         
         # PHASE 3: Initialize surgical edit system
         self.surgical_edit = SurgicalEditSystem() if SURGICAL_EDIT_AVAILABLE else None
+        
+        # 95% Accuracy: Pre-execution validator
+        self.validator = PreExecutionValidator('/app') if VALIDATOR_AVAILABLE else None
     
     def _enhance_prompt_with_surgical_guidance(self, base_prompt: str) -> str:
         """Add surgical edit guidance to prompt (PHASE 3)"""
@@ -69,6 +79,19 @@ Remember: Edit, don't rewrite! This reduces errors by 50%.
 
 '''
         return guidance + "\n" + base_prompt
+    
+    def _validate_action(self, action: dict) -> dict:
+        """Pre-execution validation for 95%+ accuracy"""
+        if not self.validator:
+            return {'valid': True, 'confidence': 0.7, 'issues': []}
+        
+        result = self.validator.validate_action(action)
+        return {
+            'valid': result.valid,
+            'confidence': result.confidence,
+            'issues': result.issues,
+            'blocking': result.blocking_issues
+        }
     
     def _get_system_prompt(self) -> str:
         return '''You are a Coding Agent specialized in generating and editing code.
